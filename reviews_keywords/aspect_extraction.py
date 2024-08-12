@@ -8,6 +8,7 @@ from sumy.parsers.plaintext import PlaintextParser
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lsa import LsaSummarizer
 from .text_cleaning import clean_text, preprocess_text
+from collections import defaultdict, Counter
 
 CONFIG = yaml.safe_load(open(os.path.join(os.path.dirname(__file__), 'config.yaml')))
 
@@ -22,6 +23,54 @@ kw_extractor = yake.KeywordExtractor(
     top=50,  # Количество ключевых слов, которые будут извлекаться.
     dedupFunc="levs"  # Используемая функция для дублирования.
 )
+
+def collect_morphology(doc):
+    """
+    Функция для анализа морфологических характеристик всех слов в документе.
+    
+    :param doc: Документ для анализа.
+    :return: Словарь, где ключ - лемма, значение - наиболее часто встречающиеся морфологические характеристики.
+    """
+    lemma_stats = defaultdict(lambda: {'gender': Counter(), 'number': Counter(), 'case': Counter(), 
+                                       'tense': Counter(), 'person': Counter(), 'mood': Counter(),
+                                       'aspect': Counter()})
+    
+    for token in doc:
+        if token.is_stop or token.is_punct:
+            continue
+
+        lemma = token.lemma_.lower()
+
+        # Сбор статистики по морфологическим характеристикам
+        if 'Gender' in token.morph:
+            lemma_stats[lemma]['gender'][token.morph.get('Gender')[0]] += 1
+        if 'Number' in token.morph:
+            lemma_stats[lemma]['number'][token.morph.get('Number')[0]] += 1
+        if 'Case' in token.morph:
+            lemma_stats[lemma]['case'][token.morph.get('Case')[0]] += 1
+        if 'Tense' in token.morph:
+            lemma_stats[lemma]['tense'][token.morph.get('Tense')[0]] += 1
+        if 'Person' in token.morph:
+            lemma_stats[lemma]['person'][token.morph.get('Person')[0]] += 1
+        if 'Mood' in token.morph:
+            lemma_stats[lemma]['mood'][token.morph.get('Mood')[0]] += 1
+        if 'Aspect' in token.morph:
+            lemma_stats[lemma]['aspect'][token.morph.get('Aspect')[0]] += 1
+
+    # Определяем наиболее частые значения для каждой характеристики
+    aggregated_stats = {}
+    for lemma, stats in lemma_stats.items():
+        aggregated_stats[lemma] = {
+            'gender': stats['gender'].most_common(1)[0][0] if stats['gender'] else None,
+            'number': stats['number'].most_common(1)[0][0] if stats['number'] else None,
+            'case': stats['case'].most_common(1)[0][0] if stats['case'] else None,
+            'tense': stats['tense'].most_common(1)[0][0] if stats['tense'] else None,
+            'person': stats['person'].most_common(1)[0][0] if stats['person'] else None,
+            'mood': stats['mood'].most_common(1)[0][0] if stats['mood'] else None,
+            'aspect': stats['aspect'].most_common(1)[0][0] if stats['aspect'] else None,
+        }
+
+    return aggregated_stats
 
 def map_review_rating(rating):
     """
@@ -103,18 +152,13 @@ def extract_key_thought_sumy(sentences):
     return " ".join([str(sentence) for sentence in summary])
 
 def analyze_aspects(doc, rating_sentiment, analyzer):
-    """
-    Анализ аспектов текста, выявление связанных характеристик и определение тональности.
-
-    :param doc: Объект документа Spacy.
-    :param rating_sentiment: Сентимент, основанный на рейтинге.
-    :param analyzer: Объект для анализа настроения.
-    :return: Словарь с детальной информацией об аспектах.
-    """
     text = doc.text
     lemmatized_text = get_lemmas(doc)
     aspects = extract_aspects(lemmatized_text)
     aspect_details = {}
+
+    # Получение морфологических данных для лемм
+    morphology_stats = collect_morphology(doc)
 
     for aspect in aspects:
         aspect_lemma = aspect
@@ -141,15 +185,11 @@ def analyze_aspects(doc, rating_sentiment, analyzer):
             aspect_add = None
             if not morph.parse(aspect)[0].tag.POS == "NOUN":
                 aspect_add = aspect
-                aspect = "товар"
 
             agreed_phrases = []
             for char in characteristics:
                 if char not in {"хороший", "плохой"}:
-                    if aspect_add:
-                        agreed_phrases.append(get_agreed_phrase("товар", char, aspect_add))
-                    else:
-                        agreed_phrases.append(get_agreed_phrase(aspect, char))
+                    agreed_phrases.append(get_agreed_phrase(aspect, char, aspect_add))
 
             if aspect_lemma not in aspect_details:
                 aspect_details[aspect_lemma] = {
@@ -161,7 +201,8 @@ def analyze_aspects(doc, rating_sentiment, analyzer):
                     'rating_positive': 1 if rating_sentiment == 'positive' else 0,
                     'rating_negative': 1 if rating_sentiment == 'negative' else 0,
                     'agreed_phrases': agreed_phrases,
-                    'aspect_add': aspect_add
+                    'aspect_add': aspect_add,
+                    'morphology': morphology_stats.get(aspect_lemma)  # Добавление морфологических данных
                 }
             else:
                 aspect_details[aspect_lemma]['count'] += 1
@@ -236,38 +277,33 @@ def get_agreed_phrase(*args):
     Согласовывает фразу из набора слов (аспектов и характеристик).
 
     :param args: Набор слов (аспектов и характеристик).
-    :return: Согласованная фраза. Если не получилось согласовать, слова фразы возвращаются через пробел в исходном виде в формате string 
+    :return: Согласованная фраза. Если не получилось согласовать, слова фразы возвращаются через пробел в исходном виде.
     """
     args = [arg for arg in args if arg]  # Удаляем пустые аргументы
+    if not args:
+        return ""
+
     try:
         parsed_args = [morph.parse(arg)[0] for arg in args]  # Разбор всех аргументов
+
         base_word = parsed_args[0]
+        agreed_words = [base_word.word]
 
         for word in parsed_args[1:]:
             if word.tag.POS in {"ADJF", "ADJS", "COMP"} and base_word.tag.POS in {"NOUN", "ADJF", "ADJS", "COMP"}:
-                # Если слово прилагательное и базовое слово существительное или прилагательное
-                gender = base_word.tag.gender
-                number = base_word.tag.number
-                gram_case = base_word.tag.case
-                word = word.inflect({gender, number, gram_case})
-
+                # Согласование прилагательного с существительным или другим прилагательным
+                word = word.inflect({base_word.tag.gender, base_word.tag.number, base_word.tag.case})
             elif word.tag.POS == "VERB" and base_word.tag.POS in {"NOUN", "ADJF", "ADJS", "COMP"}:
-                # Если слово глагол и базовое слово существительное или прилагательное
-                gender = base_word.tag.gender
-                number = base_word.tag.number
-                gram_case = base_word.tag.case
-                tense = word.tag.tense
-                person = word.tag.person
-                word = word.inflect({gender, number, gram_case, tense, person})
+                # Согласование глагола с существительным или прилагательным
+                word = word.inflect({base_word.tag.gender, base_word.tag.number, base_word.tag.case, word.tag.tense, word.tag.person})
 
-            elif word.tag.POS == "ADVB":
-                # Если слово наречие
-                pass  # Наречие не изменяется
+            if word:  # Если слово успешно согласовано
+                agreed_words.append(word.word)
+            else:
+                agreed_words.append(word.normal_form)
 
-            if word is not None:
-                base_word = word
-
-        agreed_phrase = ' '.join(arg if isinstance(arg, str) else arg.word for arg in parsed_args)
-        return agreed_phrase
+        return ' '.join(agreed_words)
     except Exception as e:
-        return ' '.join(args)
+        return ' '.join(args)  # Если произошла ошибка, возвращаем исходные слова
+
+
