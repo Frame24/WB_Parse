@@ -11,11 +11,11 @@ CONFIG = yaml.safe_load(open(os.path.join(os.path.dirname(__file__), 'config.yam
 
 def analyze_reviews(data, categories=None):
     """
-    Анализирует отзывы и извлекает важные аспекты для указанных категорий.
+    Анализирует отзывы и извлекает важные аспекты для указанных категорий и товаров.
 
     :param data: DataFrame с данными отзывов.
     :param categories: Список категорий для анализа (или None для анализа всех категорий).
-    :return: DataFrame с объединенными результатами анализа по всем категориям.
+    :return: DataFrame с объединенными результатами анализа по всем категориям и товарам.
     """
     
     nlp = setup_dependencies()
@@ -90,15 +90,15 @@ def analyze_reviews(data, categories=None):
 
     return all_aspect_df
 
-def create_category_summary(all_aspect_df):
+def create_category_product_summary(all_aspect_df):
     """
-    Создает сводку по категориям на основе объединенного DataFrame с аспектами.
+    Создает сводку по категориям и товарам на основе объединенного DataFrame с аспектами.
 
-    :param all_aspect_df: DataFrame, содержащий данные по всем категориям.
-    :return: DataFrame со сводной информацией по категориям.
+    :param all_aspect_df: DataFrame, содержащий данные по всем категориям и товарам.
+    :return: DataFrame со сводной информацией по категориям и товарам.
     """
-    # Группировка по категориям и расчет суммарных показателей
-    category_summary = all_aspect_df.groupby('category').agg({
+    # Группировка по категориям и товарам и расчет суммарных показателей
+    category_product_summary = all_aspect_df.groupby(['category', 'product']).agg({
         'count': 'sum',
         'positive': 'sum',
         'negative': 'sum',
@@ -108,8 +108,8 @@ def create_category_summary(all_aspect_df):
     }).reset_index()
     
     # Подсчет отношения положительных и отрицательных отзывов
-    category_summary['positive_ratio'] = category_summary['positive'] / category_summary['count']
-    category_summary['negative_ratio'] = category_summary['negative'] / category_summary['count']
+    category_product_summary['positive_ratio'] = category_product_summary['positive'] / category_product_summary['count']
+    category_product_summary['negative_ratio'] = category_product_summary['negative'] / category_product_summary['count']
 
     def get_top_aspects(df, sentiment, top_n=10):
         filtered_df = df[df['sentiment'] == sentiment]
@@ -123,11 +123,11 @@ def create_category_summary(all_aspect_df):
                 empty_aspects_str = empty_aspects
         return ', '.join(top_aspects), empty_aspects_str
     
-    # Получение топ аспектов и пустых аспектов для каждой категории
-    category_summary['positive_aspects'], category_summary['positive_empty_aspects'] = zip(*category_summary['category'].apply(lambda x: get_top_aspects(all_aspect_df[all_aspect_df['category'] == x], 'positive')))
-    category_summary['negative_aspects'], category_summary['negative_empty_aspects'] = zip(*category_summary['category'].apply(lambda x: get_top_aspects(all_aspect_df[all_aspect_df['category'] == x], 'negative')))
+    # Получение топ аспектов и пустых аспектов для каждой категории и товара
+    category_product_summary['positive_aspects'], category_product_summary['positive_empty_aspects'] = zip(*category_product_summary['product'].apply(lambda x: get_top_aspects(all_aspect_df[all_aspect_df['product'] == x], 'positive')))
+    category_product_summary['negative_aspects'], category_product_summary['negative_empty_aspects'] = zip(*category_product_summary['product'].apply(lambda x: get_top_aspects(all_aspect_df[all_aspect_df['product'] == x], 'negative')))
     
     # Сортировка по соотношению положительных отзывов
-    category_summary = category_summary.sort_values(by 'positive_ratio', ascending=False)
+    category_product_summary = category_product_summary.sort_values(by='positive_ratio', ascending=False)
 
-    return category_summary
+    return category_product_summary
