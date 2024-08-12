@@ -10,14 +10,6 @@ from nltk.tokenize import sent_tokenize
 CONFIG = yaml.safe_load(open(os.path.join(os.path.dirname(__file__), 'config.yaml')))
 
 def analyze_reviews(data, categories=None):
-    """
-    Анализирует отзывы и извлекает важные аспекты для указанных категорий и товаров.
-
-    :param data: DataFrame с данными отзывов.
-    :param categories: Список категорий для анализа (или None для анализа всех категорий).
-    :return: DataFrame с объединенными результатами анализа по всем категориям и товарам.
-    """
-    
     nlp = setup_dependencies()
     analyzer = SentimentAnalyzer(CONFIG['model_name'])
 
@@ -28,7 +20,7 @@ def analyze_reviews(data, categories=None):
     else:
         categories = data['category'].unique()
 
-    all_aspect_df = pd.DataFrame()  # Инициализация пустого DataFrame для всех результатов
+    all_aspect_df = pd.DataFrame()
 
     for category in categories:
         category_data = data.loc[data['category'] == category].copy()
@@ -60,7 +52,7 @@ def analyze_reviews(data, categories=None):
                 key_thought_sumy = extract_key_thought_sumy(original_combinations_list)
 
                 product_aspects.append({
-                    'category': category,  # Добавляем категорию в итоговый DataFrame
+                    'category': category,
                     'product': product,
                     'aspect': aspect,
                     'aspect_add': metrics.get('aspect_add'),
@@ -82,22 +74,13 @@ def analyze_reviews(data, categories=None):
         aspect_df = pd.DataFrame(product_aspects)
         aspect_df = aspect_df.sort_values(by=['product', 'total_characteristics_count'], ascending=[True, False])
         
-        # Замена значений в колонке 'aspect' на 'товар', если есть значение в колонке 'aspect_add'
         aspect_df.loc[aspect_df['aspect_add'].notna(), 'aspect'] = 'товар'
         
-        # Объединяем текущий DataFrame с общим
         all_aspect_df = pd.concat([all_aspect_df, aspect_df], ignore_index=True)
 
     return all_aspect_df
 
 def create_category_product_summary(all_aspect_df):
-    """
-    Создает сводку по категориям и товарам на основе объединенного DataFrame с аспектами.
-
-    :param all_aspect_df: DataFrame, содержащий данные по всем категориям и товарам.
-    :return: DataFrame со сводной информацией по категориям и товарам.
-    """
-    # Группировка по категориям и товарам и расчет суммарных показателей
     category_product_summary = all_aspect_df.groupby(['category', 'product']).agg({
         'count': 'sum',
         'positive': 'sum',
@@ -107,7 +90,6 @@ def create_category_product_summary(all_aspect_df):
         'rating_negative': 'sum'
     }).reset_index()
     
-    # Подсчет отношения положительных и отрицательных отзывов
     category_product_summary['positive_ratio'] = category_product_summary['positive'] / category_product_summary['count']
     category_product_summary['negative_ratio'] = category_product_summary['negative'] / category_product_summary['count']
 
@@ -123,11 +105,91 @@ def create_category_product_summary(all_aspect_df):
                 empty_aspects_str = empty_aspects
         return ', '.join(top_aspects), empty_aspects_str
     
-    # Получение топ аспектов и пустых аспектов для каждой категории и товара
     category_product_summary['positive_aspects'], category_product_summary['positive_empty_aspects'] = zip(*category_product_summary['product'].apply(lambda x: get_top_aspects(all_aspect_df[all_aspect_df['product'] == x], 'positive')))
     category_product_summary['negative_aspects'], category_product_summary['negative_empty_aspects'] = zip(*category_product_summary['product'].apply(lambda x: get_top_aspects(all_aspect_df[all_aspect_df['product'] == x], 'negative')))
     
-    # Сортировка по соотношению положительных отзывов
     category_product_summary = category_product_summary.sort_values(by='positive_ratio', ascending=False)
 
     return category_product_summary
+
+def recommend_products(category_product_summary):
+    popular_threshold = max(5, int(len(category_product_summary) * 0.25))
+    popular_products = category_product_summary.nlargest(popular_threshold, 'count')
+    less_popular_products = category_product_summary[(category_product_summary['count'] >= 10) & (~category_product_summary.index.isin(popular_products.index))]
+
+    popular_recommendation = popular_products.iloc[0]
+    less_popular_recommendation = less_popular_products.iloc[0] if not less_popular_products.empty else None
+
+    recommendations = {
+        'popular': {
+            'product': popular_recommendation['product'],
+            'positive_ratio': popular_recommendation['positive_ratio'],
+            'rating_positive': popular_recommendation['rating_positive'],
+            'rating_negative': popular_recommendation['rating_negative'],
+            'positive_aspects': popular_recommendation['positive_aspects'],
+            'negative_aspects': popular_recommendation['negative_aspects'],
+            'positive_empty_aspects': popular_recommendation['positive_empty_aspects'],
+            'negative_empty_aspects': popular_recommendation['negative_empty_aspects']
+        },
+        'less_popular': {
+            'product': less_popular_recommendation['product'] if less_popular_recommendation is not None else "N/A",
+            'positive_ratio': less_popular_recommendation['positive_ratio'] if less_popular_recommendation is not None else "N/A",
+            'rating_positive': less_popular_recommendation['rating_positive'] if less_popular_recommendation is not None else "N/A",
+            'rating_negative': less_popular_recommendation['rating_negative'] if less_popular_recommendation is not None else "N/A",
+            'positive_aspects': less_popular_recommendation['positive_aspects'] if less_popular_recommendation is not None else "N/A",
+            'negative_aspects': less_popular_recommendation['negative_aspects'] if less_popular_recommendation is not None else "N/A",
+            'positive_empty_aspects': less_popular_recommendation['positive_empty_aspects'] if less_popular_recommendation is not None else "N/A",
+            'negative_empty_aspects': less_popular_recommendation['negative_empty_aspects'] if less_popular_recommendation is not None else "N/A"
+        }
+    }
+
+    return recommendations
+
+def recommend_pricing(category_product_summary):
+    price_recommendations = []
+
+    for _, row in category_product_summary.iterrows():
+        if row['positive_ratio'] >= 0.8 and row['negative_ratio'] < 0.1:
+            price_change = 0.05  # Рекомендуем поднять цену на 5%
+        elif row['positive_ratio'] < 0.5:
+            price_change = -0.05  # Рекомендуем понизить цену на 5%
+        else:
+            price_change = 0  # Оставить цену без изменений
+
+        price_recommendations.append({
+            'category': row['category'],
+            'product': row['product'],
+            'price_change_recommendation': f"{price_change * 100:.2f}%" if price_change != 0 else "No change",
+        })
+
+    return pd.DataFrame(price_recommendations)
+
+def generate_product_card(category_product_summary, all_aspect_df):
+    product_cards = []
+
+    for _, row in category_product_summary.iterrows():
+        product_df = all_aspect_df[(all_aspect_df['category'] == row['category']) & (all_aspect_df['product'] == row['product'])]
+
+        # Название товара
+        title = f"{row['product']} - {' '.join(product_df['aspect'].unique())}"
+
+        # Описание товара
+        top_positive_aspects = product_df[product_df['sentiment'] == 'positive']['agreed_phrases'].explode().value_counts().head(5)
+        description = f"Этот товар имеет следующие положительные характеристики: {', '.join(top_positive_aspects.index)}."
+
+        # Ключевые характеристики
+        key_features = ', '.join(product_df['characteristics'].explode().value_counts().head(5).index)
+
+        # Преимущества товара
+        advantages = ', '.join(top_positive_aspects.index)
+
+        product_cards.append({
+            'category': row['category'],
+            'product': row['product'],
+            'title': title,
+            'description': description,
+            'key_features': key_features,
+            'advantages': advantages,
+        })
+
+    return pd.DataFrame(product_cards)
