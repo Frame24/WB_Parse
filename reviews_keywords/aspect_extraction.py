@@ -1,4 +1,5 @@
 import yake
+from .setup_dependencies import setup_dependencies
 import yaml
 import os
 from tqdm import tqdm
@@ -9,8 +10,33 @@ from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lsa import LsaSummarizer
 from .text_cleaning import clean_text, preprocess_text
 from collections import defaultdict, Counter
+import re
+import logging
+
+# Настройка логирования
+logging.basicConfig(
+    filename='./reviews_keywords/logfile.log',  # Укажите путь к файлу для сохранения логов
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 CONFIG = yaml.safe_load(open(os.path.join(os.path.dirname(__file__), 'config.yaml')))
+
+nlp = setup_dependencies()
+    
+# Словари аспектных групп
+aspect_groups_all = {
+    'основные характеристики': CONFIG['aspect_groups_main'],
+    'электроника и устройства': CONFIG['aspect_groups_devices'],
+    'автотовары': CONFIG['aspect_groups_cars'],
+    'одежда и обувь': CONFIG['aspect_groups_clothes'],
+    'бытовая техника': CONFIG['aspect_groups_appliances'],
+    'красота и уход': CONFIG['aspect_groups_beauty'],
+    'игрушки и детские товары': CONFIG['aspect_groups_toys'],
+    'канцелярия и книги': CONFIG['aspect_groups_books'],
+    'мебель и интерьер': CONFIG['aspect_groups_furniture'],
+    'сад и огород': CONFIG['aspect_groups_garden'],
+}
 
 # Инициализация морфологического анализатора для работы с русским языком.
 morph = pymorphy2.MorphAnalyzer()
@@ -151,17 +177,135 @@ def extract_key_thought_sumy(sentences):
     summary = summarizer(parser.document, 1)
     return " ".join([str(sentence) for sentence in summary])
 
-def analyze_aspects(doc, rating_sentiment, analyzer):
+# Кэши
+group_vectors_cache = {}
+category_vectors_cache = {}
+
+def preprocess_category(category):
+    """
+    Предобрабатывает категорию: удаляет английские слова и разделяет категории по слэшу.
+
+    :param category: Категория продукта.
+    :return: Предобработанная категория.
+    """
+    text = category.replace('/', ' ')
+    # Удаляем английские слова
+    text = re.sub(r'\b[a-zA-Z]+\b', '', text)
+    # Удаляем лишние пробелы
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def compute_group_vector(aspect_group, nlp):
+    total_vector = None
+    count = 0
+    for doc in tqdm(nlp.pipe(aspect_group, disable=["ner", "parser"]), total=len(aspect_group), desc="Вычисление векторов аспектной группы"):
+        if total_vector is None:
+            total_vector = doc.vector
+        else:
+            total_vector += doc.vector
+        count += 1
+    return total_vector / count if count > 0 else None
+
+# Кэш для векторов категорий и групп
+category_vectors_cache = {}
+group_vectors_cache = {}
+
+import numpy as np
+
+def normalize_vector(vector):
+    """
+    Нормализует вектор до единичной длины.
+    
+    :param vector: Вектор для нормализации.
+    :return: Нормализованный вектор.
+    """
+    norm = np.linalg.norm(vector)
+    return vector / norm if norm != 0 else vector
+
+def get_group_vector(group_name, nlp):
+    """
+    Возвращает нормализованный вектор для группы на основе её названия.
+    
+    :param group_name: Название группы аспектов.
+    :param nlp: Модель Spacy.
+    :return: Нормализованный вектор группы.
+    """
+    if group_name not in group_vectors_cache:
+        doc = nlp(group_name.lower())
+        group_vector = doc.vector
+        group_vectors_cache[group_name] = normalize_vector(group_vector)
+    return group_vectors_cache[group_name]
+
+def get_category_vector(category, nlp):
+    """
+    Возвращает нормализованный вектор для категории на основе её названия.
+    
+    :param category: Название категории.
+    :param nlp: Модель Spacy.
+    :return: Нормализованный вектор категории.
+    """
+    category_cleaned = preprocess_category(category)
+    if category_cleaned not in category_vectors_cache:
+        doc = nlp(category_cleaned)
+        category_vector = doc.vector
+        category_vectors_cache[category_cleaned] = normalize_vector(category_vector)
+    return category_vectors_cache[category_cleaned]
+
+def find_best_aspect_groups(category, aspect_groups_all, threshold=0.4):
+    best_groups = ['основные характеристики']
+    
+    category_vector = get_category_vector(category, nlp)
+    best_similarity = 0
+    best_group_name = None
+    
+    for group_name in aspect_groups_all.keys():
+        group_vector = get_group_vector(group_name, nlp)
+        
+        similarity = np.dot(category_vector, group_vector)
+        logging.debug(f"Similarity between {category} and {group_name}: {similarity}")
+        
+        if similarity > best_similarity and similarity >= threshold:
+            best_similarity = similarity
+            best_group_name = group_name
+    
+    if best_group_name and best_group_name != 'основные характеристики':
+        best_groups.append(best_group_name)
+    
+    logging.info(f"Best groups for category {category}: {best_groups}")
+    return best_groups
+
+
+def find_best_aspect(aspect, best_groups, group_vectors_cache, doc, threshold=0.5):
+    aspect_token = [token for token in doc if token.text.lower() == aspect.lower()]
+    if not aspect_token:
+        return None
+    aspect_vector = aspect_token[0].vector
+    best_aspect_name = None
+    max_similarity = 0
+    for group_name in best_groups:
+        for aspect_name, keywords in aspect_groups_all[group_name].items():
+            group_vector = group_vectors_cache[group_name]
+            similarity = aspect_vector @ group_vector
+            logging.debug(f"Similarity between aspect {aspect} and {aspect_name}: {similarity}")
+            if similarity > max_similarity and similarity >= threshold:
+                max_similarity = similarity
+                best_aspect_name = aspect_name
+    return best_aspect_name if best_aspect_name else aspect
+
+def analyze_aspects(doc, category, rating_sentiment, analyzer):
     text = doc.text
     lemmatized_text = get_lemmas(doc)
     aspects = extract_aspects(lemmatized_text)
     aspect_details = {}
-
-    # Получение морфологических данных для лемм
-    morphology_stats = collect_morphology(doc)
-
+    best_groups = find_best_aspect_groups(category, aspect_groups_all)
+    aspect_group_type = None
     for aspect in aspects:
-        aspect_lemma = aspect
+        best_aspect_name = find_best_aspect(aspect, best_groups, group_vectors_cache, doc)
+        if best_aspect_name is None:
+            continue
+        if not aspect_group_type:
+            aspect_group_type = ', '.join(best_groups)
+        grouped_aspects = aspect_groups_all.get(best_groups[0], {}).get(best_aspect_name, [])
         sentences = [sent for sent in doc.sents if aspect in sent.text]
         if sentences:
             sentiment_result = analyzer.classify(aspect)
@@ -170,29 +314,23 @@ def analyze_aspects(doc, rating_sentiment, analyzer):
             aspect_desc = max(sentences, key=lambda sent: len([token for token in sent if token.text == aspect])).text
             characteristics = []
             original_combinations = set()
-
             for token in sentences[0]:
                 if token.text == aspect:
                     characteristics.extend(collect_related_words(token))
                     characteristics.extend(collect_parent_words(token))
-
             characteristics = list(dict.fromkeys(characteristics))
             combined_aspect_characteristics = f"{aspect} {' '.join(characteristics)}"
-
             description = f"{aspect_desc}. Тональность: {combined_sentiment}. Характеристики: {', '.join(characteristics)}."
             original_combinations.add(aspect_desc)
-            
             aspect_add = None
             if not morph.parse(aspect)[0].tag.POS == "NOUN":
                 aspect_add = aspect
-
             agreed_phrases = []
             for char in characteristics:
                 if char not in {"хороший", "плохой"}:
                     agreed_phrases.append(get_agreed_phrase(aspect, char, aspect_add))
-
-            if aspect_lemma not in aspect_details:
-                aspect_details[aspect_lemma] = {
+            if best_aspect_name not in aspect_details:
+                aspect_details[best_aspect_name] = {
                     'sentiment': combined_sentiment,
                     'description': description,
                     'characteristics': characteristics,
@@ -202,36 +340,28 @@ def analyze_aspects(doc, rating_sentiment, analyzer):
                     'rating_negative': 1 if rating_sentiment == 'negative' else 0,
                     'agreed_phrases': agreed_phrases,
                     'aspect_add': aspect_add,
-                    'morphology': morphology_stats.get(aspect_lemma)  # Добавление морфологических данных
+                    'aspect_group_type': aspect_group_type,
+                    'grouped_aspects': grouped_aspects
                 }
             else:
-                aspect_details[aspect_lemma]['count'] += 1
-                aspect_details[aspect_lemma]['description'] += f" | {description}"
-                aspect_details[aspect_lemma]['characteristics'].extend(characteristics)
-                aspect_details[aspect_lemma]['original_combinations'].update(original_combinations)
-                aspect_details[aspect_lemma]['agreed_phrases'].extend(agreed_phrases)
+                aspect_details[best_aspect_name]['count'] += 1
+                aspect_details[best_aspect_name]['description'] += f" | {description}"
+                aspect_details[best_aspect_name]['characteristics'].extend(characteristics)
+                aspect_details[best_aspect_name]['original_combinations'].update(original_combinations)
+                aspect_details[best_aspect_name]['agreed_phrases'].extend(agreed_phrases)
                 if rating_sentiment == 'positive':
-                    aspect_details[aspect_lemma]['rating_positive'] += 1
+                    aspect_details[best_aspect_name]['rating_positive'] += 1
                 elif rating_sentiment == 'negative':
-                    aspect_details[aspect_lemma]['rating_negative'] += 1
-
+                    aspect_details[best_aspect_name]['rating_negative'] += 1
+    logging.info(f"Analyzed aspects for category {category}: {aspect_details}")
     return aspect_details
 
-def process_texts(texts, ratings, analyzer, batch_size, nlp):
-    """
-    Обрабатывает набор текстов, извлекает аспекты и определяет их тональность.
-
-    :param texts: Список текстов для анализа.
-    :param ratings: Список рейтингов, соответствующих текстам.
-    :param analyzer: Объект для анализа настроения.
-    :param batch_size: Размер партии для пакетной обработки.
-    :param nlp: Объект Spacy для обработки текста.
-    :return: Список аспектов с детализированной информацией.
-    """
+def process_texts(texts, ratings, category, analyzer, batch_size, nlp):
     all_aspect_details = []
     for doc, rating in tqdm(zip(nlp.pipe(texts, batch_size=batch_size), ratings), total=len(texts), desc="Processing docs"):
         rating_sentiment = map_review_rating(rating)
-        all_aspect_details.append(analyze_aspects(doc, rating_sentiment, analyzer))
+        all_aspect_details.append(analyze_aspects(doc,category, rating_sentiment, analyzer))
+    logging.info(f"Processed texts for category {category}: {all_aspect_details}")
     return all_aspect_details
 
 def evaluate_aspect_importance(df):
@@ -305,5 +435,3 @@ def get_agreed_phrase(*args):
         return ' '.join(agreed_words)
     except Exception as e:
         return ' '.join(args)  # Если произошла ошибка, возвращаем исходные слова
-
-

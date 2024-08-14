@@ -31,7 +31,7 @@ def analyze_reviews(data, categories=None):
         texts = category_data["corrected_text"].apply(clean_text).tolist()
         ratings = category_data["review_rating"].tolist()
 
-        aspect_details = process_texts(texts, ratings, analyzer, CONFIG['batch_size'], nlp)
+        aspect_details = process_texts(texts, ratings, category, analyzer, CONFIG['batch_size'], nlp)
         category_data['aspect_details'] = aspect_details
 
         aspect_importance = evaluate_aspect_importance(category_data)
@@ -39,35 +39,33 @@ def analyze_reviews(data, categories=None):
         product_aspects = []
         for product, aspects in aspect_importance.items():
             for aspect, metrics in aspects.items():
-                if metrics['count'] < 3:
-                    continue  
-                characteristics_counter = {char: metrics['characteristics'].count(char) for char in set(metrics['characteristics'])}
-                original_combinations_list = list(set(metrics['original_combinations']))
-                if not characteristics_counter:
-                    continue
-                sorted_characteristics = sorted(characteristics_counter.items(), key=lambda x: x[1], reverse=True)
-                sorted_characteristics_str = ', '.join([f"{char}: {count}" for char, count in sorted_characteristics])
-                total_characteristics_count = sum(characteristics_counter.values())
-
-                key_thought_sumy = extract_key_thought_sumy(original_combinations_list)
-
+                # Создаем контекстуализированное описание для каждого аспекта
+                demo_description = create_contextual_description(
+                    aspect,
+                    metrics['characteristics'],
+                    {'positive': metrics['positive'], 'negative': metrics['negative']},
+                    list(metrics['original_combinations'])  # Используем оригинальные примеры фраз
+                )
+                
                 product_aspects.append({
                     'category': category,
+                    'aspect_group_type': metrics.get('aspect_group_type'),  # Новая колонка для типа категории
                     'product': product,
                     'aspect': aspect,
                     'aspect_add': metrics.get('aspect_add'),
+                    'grouped_aspects': ', '.join(metrics.get('grouped_aspects', [])),  # Новая колонка для сгруппированных аспектов
                     'count': metrics['count'],
                     'positive': metrics['positive'],
                     'negative': metrics['negative'],
                     'neutral': metrics['neutral'],
-                    'descriptions': max(metrics['descriptions'], key=len),
-                    'characteristics': sorted_characteristics_str,
-                    'original_combinations': original_combinations_list,
-                    'total_characteristics_count': total_characteristics_count,
+                    'descriptions': demo_description,  # Добавляем контекстуализированное описание
+                    'characteristics': ', '.join(set(metrics['characteristics'])),
+                    'original_combinations': list(metrics['original_combinations']),
+                    'total_characteristics_count': len(metrics['characteristics']),
                     'rating_positive': metrics['rating_positive'],
                     'rating_negative': metrics['rating_negative'],
-                    'sentiment': 'positive' if metrics['rating_positive'] + metrics['positive'] - metrics['rating_negative'] - metrics['negative'] > 0 else 'negative',
-                    'key_thought_sumy': key_thought_sumy,
+                    'sentiment': 'positive' if metrics['positive'] > metrics['negative'] else 'negative',
+                    'key_thought_sumy': extract_key_thought_sumy(metrics['original_combinations']),
                     'agreed_phrases': metrics["agreed_phrases"],
                 })
 
@@ -79,6 +77,29 @@ def analyze_reviews(data, categories=None):
         all_aspect_df = pd.concat([all_aspect_df, aspect_df], ignore_index=True)
 
     return all_aspect_df
+
+def create_contextual_description(aspect, characteristics, sentiments, examples):
+    # Определяем общий тон описания
+    if sentiments['positive'] > sentiments['negative']:
+        sentiment_description = "в основном положительно"
+    else:
+        sentiment_description = "в основном отрицательно"
+    
+    # Создаем базовое описание с использованием шаблона
+    description = f"Аспект '{aspect}' оценивается клиентами {sentiment_description}."
+    
+    # Добавляем характеристики, если они существуют
+    if characteristics:
+        characteristics_str = ', '.join(characteristics)
+        description += f" Клиенты чаще всего упоминают следующие характеристики: {characteristics_str}."
+    
+    # Добавляем примеры из отзывов для наглядности
+    if examples:
+        top_example = examples[0]  # Берем первый пример для краткости
+        description += f" Например: «{top_example}»."
+    
+    return description
+
 
 def create_category_product_summary(all_aspect_df):
     category_product_summary = all_aspect_df.groupby(['category', 'product']).agg({
