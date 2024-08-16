@@ -236,6 +236,7 @@ def get_group_vector(group_name, nlp):
         group_vectors_cache[group_name] = normalize_vector(group_vector)
     return group_vectors_cache[group_name]
 
+<<<<<<< HEAD
 from transformers import BertTokenizer, BertModel
 import torch
 import numpy as np
@@ -271,11 +272,36 @@ def find_best_aspect_groups(category, aspect_groups_all, threshold=0.4):
     best_groups = ['основные характеристики']
     
     category_vector = get_category_vector(category)
+=======
+def get_category_vector(category, nlp):
+    """
+    Возвращает нормализованный вектор для категории на основе её названия.
+    
+    :param category: Название категории.
+    :param nlp: Модель Spacy.
+    :return: Нормализованный вектор категории.
+    """
+    category_cleaned = preprocess_category(category)
+    if category_cleaned not in category_vectors_cache:
+        doc = nlp(category_cleaned)
+        category_vector = doc.vector
+        category_vectors_cache[category_cleaned] = normalize_vector(category_vector)
+    return category_vectors_cache[category_cleaned]
+
+def find_best_aspect_groups(category, aspect_groups_all, threshold=0.4):
+    best_groups = ['основные характеристики']
+    
+    category_vector = get_category_vector(category, nlp)
+>>>>>>> 31819c141cf642e822f09b7f1feb47e269a24bac
     best_similarity = 0
     best_group_name = None
     
     for group_name in aspect_groups_all.keys():
+<<<<<<< HEAD
         group_vector = get_group_vector(group_name)
+=======
+        group_vector = get_group_vector(group_name, nlp)
+>>>>>>> 31819c141cf642e822f09b7f1feb47e269a24bac
         
         similarity = np.dot(category_vector, group_vector)
         logging.debug(f"Similarity between {category} and {group_name}: {similarity}")
@@ -291,22 +317,37 @@ def find_best_aspect_groups(category, aspect_groups_all, threshold=0.4):
     return best_groups
 
 
+<<<<<<< HEAD
 
 def find_best_aspect(aspect, best_groups, group_vectors_cache, doc, threshold=0.5):
     aspect_vector = get_bert_vector(aspect.lower())  # Используем BERT для создания вектора
+=======
+def find_best_aspect(aspect, best_groups, group_vectors_cache, doc, threshold=0.5):
+    aspect_token = [token for token in doc if token.text.lower() == aspect.lower()]
+    if not aspect_token:
+        return None
+    aspect_vector = aspect_token[0].vector
+>>>>>>> 31819c141cf642e822f09b7f1feb47e269a24bac
     best_aspect_name = None
     max_similarity = 0
     for group_name in best_groups:
         for aspect_name, keywords in aspect_groups_all[group_name].items():
             group_vector = group_vectors_cache[group_name]
+<<<<<<< HEAD
             similarity = np.dot(aspect_vector, group_vector)
+=======
+            similarity = aspect_vector @ group_vector
+>>>>>>> 31819c141cf642e822f09b7f1feb47e269a24bac
             logging.debug(f"Similarity between aspect {aspect} and {aspect_name}: {similarity}")
             if similarity > max_similarity and similarity >= threshold:
                 max_similarity = similarity
                 best_aspect_name = aspect_name
     return best_aspect_name if best_aspect_name else aspect
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> 31819c141cf642e822f09b7f1feb47e269a24bac
 def analyze_aspects(doc, category, rating_sentiment, analyzer):
     text = doc.text
     lemmatized_text = get_lemmas(doc)
