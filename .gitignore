@@ -6,6 +6,10 @@ venv/
 *.csv
 data/
 
+/reviews_keywords/results/checkpoint*/
+*optimizer.pt
+*model.safetensors
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
