@@ -4,7 +4,12 @@ myenv/
 env/
 venv/
 *.csv
+*.csv.gz
 data/
+
+/reviews_keywords/results/checkpoint*/
+*optimizer.pt
+*model.safetensors
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
