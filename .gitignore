@@ -4,6 +4,7 @@ myenv/
 env/
 venv/
 *.csv
+*.csv.gz
 data/
 
 /reviews_keywords/results/checkpoint*/
