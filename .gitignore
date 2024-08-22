@@ -4,7 +4,9 @@ myenv/
 env/
 venv/
 *.csv
+*.csv.gz
 data/
+.paraquet
 
 /reviews_keywords/results/checkpoint*/
 *optimizer.pt
